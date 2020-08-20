@@ -1,0 +1,335 @@
+---
+title: "Final Project"
+author: "Cady Stringer, James Kistner, Miranda Heyer, Justo Garica"
+date: "11/21/2019"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Countries and continent data from https://github.com/dbouquin/IS_608/blob/master/NanosatDB_munging/Countries-Continents.csv
+FIFA data from https://towardsdatascience.com/exploratory-analysis-of-fifa-18-dataset-using-r-ba09aa4a2d3c
+
+CLEANING:
+```{r}
+library(tidyverse)
+library(magrittr)
+library(glmnet)
+library(glmnetUtils)
+library(readr)
+library(dplyr)
+library(textclean)
+library(coefplot)
+library(hdm)
+library(leaps)
+library(useful)
+library(forcats)
+library(varhandle)
+library(regclass)
+library(RColorBrewer)
+library(maps)
+library(geosphere)
+library(randomForest)
+library(caret)
+library(randomForestExplainer)
+
+fifa_data <- read.csv(here::here("datasets","fifa_data.csv")) 
+countries <- read.csv(here::here("datasets","CountriesContinents.csv")) 
+colnames(countries)[2] <- "Nationality"
+fifa_data <- right_join(countries, fifa_data)
+
+fifa_data$Wage <- sub('K', '', (fifa_data$Wage)) 
+fifa_data$Wage <- sub('€', '', (fifa_data$Wage)) 
+fifa_data$Weight <- sub('lbs', '', fifa_data$Weight)
+
+fifa_data$Weight <- as.numeric(fifa_data$Weight)
+fifa_data$Wage <- as.numeric(fifa_data$Wage)
+
+fifa_data <- fifa_data %>% mutate(Club = fct_lump(Club, n = 10))
+
+cols <- c("X", "ID", "Name", "Nationality", "Value", "Release.Clause", "Photo", "Jersey.Number", "Joined", "Flag", "Club.Logo", "Special", "Body.Type", "Real.Face", "Loaned.From", "Contract.Valid.Until")
+
+fifa_data <- fifa_data %>% dplyr::select(-cols)
+fifa_data <- fifa_data[complete.cases(fifa_data), ]
+fifa_data <- na.omit(fifa_data)
+
+fifa_data <- fifa_data[-(15:40)]
+
+for (i in 1:dim(fifa_data)[2]){
+  count = 0
+  for (j in 1:nrow(fifa_data))
+  {
+    if ((fifa_data[j - count, i] == "")){
+      fifa_data %<>% slice(-(j - count))
+      count = count + 1
+    }
+  }
+}
+
+fifa_data$Height <- strip(fifa_data$Height, digit.remove = FALSE,
+      apostrophe.remove = TRUE, lower.case = TRUE)
+
+fifa_data$Height <- as.numeric(fifa_data$Height)
+
+height_to_inches <- function(height){
+  if(height >= 500){
+    inches_left = floor((height/100))
+    inches_left = inches_left * 12
+    inches_right = height - 500
+    inches = inches_left + inches_right
+  }
+  else if(height >= 60){
+    inches_left = floor((height/10))
+    inches_left = inches_left * 12
+    inches_right = height - 60
+    inches = inches_left + inches_right
+  }
+  else if(height >= 50){
+    inches_left = floor((height/10))
+    inches_left = inches_left * 12
+    inches_right = height - 50
+    inches = inches_left + inches_right
+  }
+  return(inches)
+}
+
+for (i in 1:nrow(fifa_data)){
+  fifa_data$Height[[i]] <- height_to_inches(fifa_data$Height[[i]])
+}
+```
+
+TEST/TRAIN SPLIT:
+```{r}
+set.seed(9999)
+
+train_size <- 0.7
+train_idx <- sample(1:nrow(fifa_data), size = train_size*(nrow(fifa_data)))
+fifa_train <- fifa_data %>% slice(train_idx)
+fifa_test <- fifa_data %>% slice(-train_idx)
+
+options(scipen = 5)
+summary(fifa_data)
+```
+
+EXPLORATION PLOTS:
+```{r}
+Arsenal <- c(-0.1, 51.5)
+AS_monaco <- c(7.4, 43.7 )
+Madrid <- c(-3.7, 40.4)
+Borussia <- c(7.4, 51.51)
+Burnley <- c(-2.2, 53.7)
+Cardiff <- c(-3.1, 51.4)
+Leganes <- c(-3.7, 40.3)
+Chelsea <- c(-0.17, 51.4)
+Frankfurt <- c(8.6, 50.1)
+Empoli <- c(10.9, 43.7)
+Everton <- c(-93.7, 37.3)
+Barcelona <- c(2.1, 41.3)
+Dusseldorf <- c(6.7, 51.2)
+Frosinone <- c(13.3, 41.6)
+Liverpool <- c(-2.9, 53.4)
+Manchester <- c(-2.2, 53.4)
+Newcastle <- c(-1.6, 54.9)
+Rayo <- c(-119.1, 36.4)
+Vigo <- c(-8.7, 42.2)
+Southhampton <- c(-1.4, 50.9)
+Tottenham <- c(-0.06, 51.6)
+Hoffenheim <- c(8.8, 49.2)
+Valencia <- c(-0.3, 39.4)
+Wolverhampton <- c(-2.1, 52.5)
+
+# Data frame
+data <- rbind(Arsenal, AS_monaco, Madrid, Borussia, Burnley, Cardiff, Leganes, Chelsea, Frankfurt, Empoli,
+              Everton, Barcelona, Dusseldorf, Frosinone, Liverpool, Manchester, Newcastle, 
+              Rayo, Vigo, Southhampton, Tottenham, Hoffenheim, Valencia, Wolverhampton) %>% as.data.frame()
+colnames(data) <- c("long","lat")
+
+# Show the cities on the map
+map('world',
+col="darkgreen", fill=TRUE, bg="white", lwd=0.05,
+mar=rep(0,4),border=0, ylim=c(-80,80) 
+)
+points(x=data$long, y=data$lat, col="darkblue", cex=2, pch=20)
+
+#Density Plot
+ggplot(data=fifa_data, aes(x=log(Wage),fill=Club)) + geom_density(adjust=1.5) +labs(x = "Log Wage (thousands of Euros per week)", title="Wage Density by Club")
+
+#Wage vs Overall
+ggplot(fifa_data, aes(x = Overall, y = Wage)) + geom_point(alpha = 0.4, aes(color = Club)) + geom_smooth() + labs(y = "Wage (thousands of Euros per week)", title = "Player Wage vs Overall Skill Rating")
+
+#Wage vs Age
+ggplot(fifa_data, aes(x = Age, y = Wage)) + geom_point(alpha = 0.4,aes(color = factor(Continent))) +  labs(y = "Wage (thousands of Euros per week)", title = "Player Age vs Wage colored by Continent") 
+```
+
+ELASTIC NET:
+```{r}
+alpha_grid <- seq(0,1, length = 5)
+fifa_enet_mod <-cva.glmnet(Wage ~.,
+                      data = fifa_train,
+                      alpha = alpha_grid)
+
+fifa_enet_coef <- data.frame(
+  varname = rownames(coef(fifa_enet_mod$modlist[[1]])),
+  ridge = as.matrix(coef(fifa_enet_mod$modlist[[1]])) %>% round(3),
+  coef_0.25 = as.matrix(coef(fifa_enet_mod$modlist[[2]])) %>% round(3),
+  coef_0.5 = as.matrix(coef(fifa_enet_mod$modlist[[3]])) %>% round(3),
+  coef_0.75 = as.matrix(coef(fifa_enet_mod$modlist[[4]])) %>% round(3),
+  lasso = as.matrix(coef(fifa_enet_mod$modlist[[5]])) %>% round(3)
+) %>% remove_rownames() %>% rename(varname = 1, ridge = 2, coef_0.25 = 3, coef_0.5 = 4, coef_0.75 = 5, lasso = 6)
+
+minlossplot(fifa_enet_mod)
+plot(fifa_enet_mod$modlist[[4]])
+
+preds_DF <- data.frame(
+  fifa_enet_preds <- round(predict(fifa_enet_mod, alpha = 0.75, fifa_test,
+                                   s = fifa_enet_mod$modlist[[4]]$lambda.1se), 1), fifa_test
+)
+
+coef(fifa_enet_mod$modlist[[4]])
+
+postResample(pred = fifa_enet_preds, obs = fifa_test$Wage)
+ggplot(fifa_test, aes(x = Wage, y = fifa_enet_preds)) + geom_point() + geom_smooth()
+```
+
+LINEAR MODEL:
+```{r}
+fifa_lm_mod <- lm(Wage ~ .,
+                  fifa_train)
+VIF(fifa_lm_mod)
+plot(fifa_lm_mod)
+preds_DF_lm <- data.frame(fifa_lm_preds = predict(fifa_lm_mod, newdata=fifa_test))
+postResample(preds_DF_lm$fifa_lm_preds,fifa_test$Wage)
+ggplot(fifa_test, aes(x = Wage, y = preds_DF_lm$fifa_lm_preds)) + geom_point() + geom_smooth()
+```
+
+RANDOM FOREST:
+```{r}
+fifa_train_noclub <- fifa_train %>% select(-"Club")
+rf_fifa_fit <- randomForest(Wage ~.,
+                       data = fifa_train_noclub,
+                       type = regression,
+                       ntree = 100,
+                       importance = TRUE, 
+                       localImp = TRUE 
+                       )
+
+fifa_rf_test_preds <- predict(rf_fifa_fit, newdata = fifa_test)
+fifa_rf_train_preds <- predict(rf_fifa_fit)
+
+fifa_train_resids <- (fifa_train$Wage - fifa_rf_train_preds)
+
+fifa_train_resids <- sort(fifa_train_resids)
+bottom10 <- head(fifa_train_resids, n = 10)
+top10 <- tail(fifa_train_resids, n = 10)
+
+fifa_data <- read.csv(here::here("datasets","fifa_data.csv")) 
+countries <- read.csv(here::here("datasets","CountriesContinents.csv")) 
+colnames(countries)[2] <- "Nationality"
+fifa_data <- right_join(countries, fifa_data)
+
+fifa_data$Wage <- sub('K', '', (fifa_data$Wage)) 
+fifa_data$Wage <- sub('€', '', (fifa_data$Wage)) 
+fifa_data$Weight <- sub('lbs', '', fifa_data$Weight)
+
+fifa_data$Weight <- as.numeric(fifa_data$Weight)
+fifa_data$Wage <- as.numeric(fifa_data$Wage)
+
+fifa_data <- fifa_data %>% mutate(Club = fct_lump(Club, n = 10))
+
+cols <- c("X", "ID", "Nationality", "Value", "Release.Clause", "Photo", "Jersey.Number", "Joined", "Flag", "Club.Logo", "Special", "Body.Type", "Real.Face", "Loaned.From", "Contract.Valid.Until")
+
+fifa_data <- fifa_data %>% dplyr::select(-cols)
+fifa_data <- fifa_data[complete.cases(fifa_data), ]
+fifa_data <- na.omit(fifa_data)
+
+fifa_data <- fifa_data[-(15:40)]
+
+for (i in 1:dim(fifa_data)[2]){
+  count = 0
+  for (j in 1:nrow(fifa_data))
+  {
+    if ((fifa_data[j - count, i] == "")){
+      fifa_data %<>% slice(-(j - count))
+      count = count + 1
+    }
+  }
+}
+
+fifa_data$Height <- strip(fifa_data$Height, digit.remove = FALSE,
+      apostrophe.remove = TRUE, lower.case = TRUE)
+
+fifa_data$Height <- as.numeric(fifa_data$Height)
+
+height_to_inches <- function(height){
+  if(height >= 500){
+    inches_left = floor((height/100))
+    inches_left = inches_left * 12
+    inches_right = height - 500
+    inches = inches_left + inches_right
+  }
+  else if(height >= 60){
+    inches_left = floor((height/10))
+    inches_left = inches_left * 12
+    inches_right = height - 60
+    inches = inches_left + inches_right
+  }
+  else if(height >= 50){
+    inches_left = floor((height/10))
+    inches_left = inches_left * 12
+    inches_right = height - 50
+    inches = inches_left + inches_right
+  }
+  return(inches)
+}
+
+for (i in 1:nrow(fifa_data)){
+  fifa_data$Height[[i]] <- height_to_inches(fifa_data$Height[[i]])
+}# returning sorted x (the last evaluated value inside the body 
+
+top10row <- c(8236, 8869, 2946, 6650, 614, 5195, 3097, 1974, 1605, 2275)
+top10names <- c(toString(fifa_data$Name[8236]), toString(fifa_data$Name[8869]), toString(fifa_data$Name[2946]), toString(fifa_data$Name[6650]), toString(fifa_data$Name[614]), toString(fifa_data$Name[5195]), toString(fifa_data$Name[3097]), toString(fifa_data$Name[1974]), toString(fifa_data$Name[1605]), toString(fifa_data$Name[2275]))
+
+toString(fifa_data$Name[8236])
+top10names
+
+bottom10row <- c(7261, 1608, 448, 2282, 1885, 9349, 2004, 5813, 1996, 9498)
+bottom10names<- c(toString(fifa_data$Name[7261]), toString(fifa_data$Name[1608]), toString(fifa_data$Name[448]), toString(fifa_data$Name[2282]), toString(fifa_data$Name[1885]), toString(fifa_data$Name[9349]), toString(fifa_data$Name[2004]), toString(fifa_data$Name[5813]), toString(fifa_data$Name[1996]), toString(fifa_data$Name[9498]))
+
+bottom10names
+
+top4 <- fifa_data$Name[8869]
+
+caret::RMSE(fifa_rf_test_preds,fifa_test$Wage)
+caret::R2(fifa_rf_test_preds,fifa_test$Wage)
+caret::MAE(fifa_rf_test_preds,fifa_test$Wage)
+postResample(fifa_rf_test_preds,fifa_test$Wage)
+  
+plot(rf_fifa_fit)
+varImpPlot(rf_fifa_fit)
+plot_predict_interaction(rf_fifa_fit, fifa_train, "Overall", "International.Reputation")
+plot_predict_interaction(rf_fifa_fit, fifa_train, "Overall", "Potential")
+```
+
+LASSO MODEL:
+```{r}
+lasso_mod_fifa <- cv.glmnet(Wage ~ ., 
+                       data = fifa_train,
+                       alpha = 1,
+                       nfolds = 10)
+
+fifa_lm_preds = predict(lasso_mod_fifa, newdata=fifa_test)
+postResample(fifa_lm_preds,fifa_test$Wage)
+
+fifa_lm_mod_lassopicks <- lm(Wage ~ International.Reputation + Overall + Potential + Club,
+                             fifa_train)
+preds_DF_lm_lassopicks <- data.frame(fifa_lm_preds = predict(fifa_lm_mod_lassopicks, newdata=fifa_test))
+postResample(preds_DF_lm_lassopicks$fifa_lm_preds,fifa_test$Wage)
+
+coef(lasso_mod_fifa, lasso_mod_fifa$lambda.min)
+coef(lasso_mod_fifa, lasso_mod_fifa$lambda.1se)
+plot(lasso_mod_fifa)
+```

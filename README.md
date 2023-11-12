@@ -1,4 +1,4 @@
-# MGSC310-Final
+# FIFA Wage Exploration
 
 We set out to predict soccer player wages based on their team and physical attributes using R. We used the 2019 FIFA video game dataset, based on real-life assessments of player skill and demographic information— the most comprehensive FIFA data available on all teams and players around the world. Our findings could be applied in team management, so player wages could be accurately predicted before negotiating a contract so teams can properly allocate their market cap on total player salary expenditure to different players depending on the value the player can bring to the team.
 
